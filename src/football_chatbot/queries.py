@@ -182,3 +182,41 @@ def get_upcoming_matches(competition: str, days: int = 7, limit: int = 20) -> li
     """
     with get_connection() as conn:
         return [dict(r) for r in conn.execute(sql, {"comp": code, "days": days, "limit": limit})]
+
+def search_articles(
+    topics: list[str], team: str | None = None, days: int = 90, limit: int = 5) -> list[dict]:
+    def quote(t: str) -> str:
+        return '"' + t.replace('"', " ").strip() + '"'
+
+    terms = [quote(t) for t in topics if t.strip()]
+    if not terms:
+        raise ValueError("Give at least one search phrase")
+    match = "(" + " OR ".join(terms) + ")"
+    if team:
+        match = f"{quote(team)} AND {match}"
+
+    sql = """
+    SELECT a.title, a.url, a.source, a.published_at,
+           snippet(articles_fts, 1, '[', ']', ' ... ', 64) AS excerpt
+    FROM articles_fts JOIN articles a ON a.id = articles_fts.rowid
+    WHERE articles_fts MATCH :q
+      AND a.published_at >= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-' || :days || ' days')
+    ORDER BY articles_fts.rank
+    LIMIT :limit
+    """
+    with get_connection() as conn:
+        rows = conn.execute(sql, {"q": match, "days": days, "limit": min(limit, 10)})
+        return [dict(r) for r in rows]
+
+def get_article(url: str, max_chars: int = 12000) -> dict:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT title, url, source, published_at, body FROM articles WHERE url = ?",
+            (url,),
+        ).fetchone()
+    if row is None:
+        raise ValueError("Article not found; use a url returned by search_articles")
+    article = dict(row)
+    article["truncated"] = len(article["body"]) > max_chars
+    article["body"] = article["body"][:max_chars]
+    return article
